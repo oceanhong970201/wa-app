@@ -43,7 +43,7 @@ func (e *NativeEngine) applyAccountSettingsWithSender(ctx context.Context, input
 	if err != nil {
 		return EngineAccountSettingsResult{Status: waappv1.AccountSettingsOperationStatus_ACCOUNT_SETTINGS_OPERATION_STATUS_REJECTED, Err: NewError(waappv1.WaErrorCode_WA_ERROR_CODE_REJECTED, "native account settings request failed", accountSettingsRetryableError(err))}
 	}
-	return accountSettingsResultFromIQ(input.Kind, response)
+	return accountSettingsResultFromIQ(input, response)
 }
 
 func (e *NativeEngine) applyAccountProfileName(ctx context.Context, input EngineAccountSettingsInput, state nativeState, sender accountSettingsIQSender) EngineAccountSettingsResult {
@@ -172,15 +172,15 @@ func buildAccountProfilePictureIQ(id string, image []byte) chatdNode {
 	}
 }
 
-func accountSettingsResultFromIQ(kind waappv1.AccountSettingsOperationKind, node chatdNode) EngineAccountSettingsResult {
+func accountSettingsResultFromIQ(input EngineAccountSettingsInput, node chatdNode) EngineAccountSettingsResult {
 	if err := chatdIQError(node); err != nil {
 		return EngineAccountSettingsResult{Status: waappv1.AccountSettingsOperationStatus_ACCOUNT_SETTINGS_OPERATION_STATUS_REJECTED, Err: err}
 	}
-	switch kind {
+	switch input.Kind {
 	case waappv1.AccountSettingsOperationKind_ACCOUNT_SETTINGS_OPERATION_KIND_TWO_FACTOR_AUTH_STATUS_GET:
 		return twoFactorAuthStatusFromIQ(node)
 	case waappv1.AccountSettingsOperationKind_ACCOUNT_SETTINGS_OPERATION_KIND_ACCOUNT_EMAIL_SET:
-		return emailSetResultFromIQ(node)
+		return emailSetResultFromIQ(node, input.EmailAddress)
 	case waappv1.AccountSettingsOperationKind_ACCOUNT_SETTINGS_OPERATION_KIND_ACCOUNT_EMAIL_OTP_REQUEST:
 		return emailOtpRequestResultFromIQ(node)
 	case waappv1.AccountSettingsOperationKind_ACCOUNT_SETTINGS_OPERATION_KIND_ACCOUNT_EMAIL_OTP_VERIFY:
@@ -217,18 +217,26 @@ func accountProfilePictureSetResultFromIQ(node chatdNode) EngineAccountSettingsR
 	}
 }
 
-func emailSetResultFromIQ(node chatdNode) EngineAccountSettingsResult {
+func emailSetResultFromIQ(node chatdNode, emailAddress string) EngineAccountSettingsResult {
 	emailNode, ok := chatdChild(node, "email")
 	if !ok {
-		return EngineAccountSettingsResult{Status: waappv1.AccountSettingsOperationStatus_ACCOUNT_SETTINGS_OPERATION_STATUS_ACCEPTED}
+		return malformedAccountSettingsResult("WA set email response is missing email")
 	}
-	if chatdNodeBool(emailNode, "auto_verify") || chatdNodeBool(emailNode, "verified") || chatdNodeBool(emailNode, "confirmed") {
-		return EngineAccountSettingsResult{Status: waappv1.AccountSettingsOperationStatus_ACCOUNT_SETTINGS_OPERATION_STATUS_VERIFIED}
+	doVerify, ok := chatdNodeBoolValue(emailNode, "do_verify")
+	if !ok {
+		return malformedAccountSettingsResult("WA set email response is missing email verification status")
 	}
-	if chatdNodeBool(emailNode, "do_verify") {
-		return EngineAccountSettingsResult{Status: waappv1.AccountSettingsOperationStatus_ACCOUNT_SETTINGS_OPERATION_STATUS_NEEDS_VERIFICATION}
+	status := &waappv1.TwoFactorAuthStatus{EmailConfigured: true, EmailAddress: strings.TrimSpace(emailAddress)}
+	if doVerify {
+		return EngineAccountSettingsResult{Status: waappv1.AccountSettingsOperationStatus_ACCOUNT_SETTINGS_OPERATION_STATUS_NEEDS_VERIFICATION, TwoFactorStatus: status}
 	}
-	return EngineAccountSettingsResult{Status: waappv1.AccountSettingsOperationStatus_ACCOUNT_SETTINGS_OPERATION_STATUS_ACCEPTED}
+	autoVerifyStatus := chatdNodeStatus(emailNode, "auto_verify")
+	if autoVerifyStatus == "success" || chatdNodeBool(emailNode, "verified") || chatdNodeBool(emailNode, "confirmed") {
+		status.EmailVerified = true
+		status.EmailConfirmed = chatdNodeBool(emailNode, "confirmed")
+		return EngineAccountSettingsResult{Status: waappv1.AccountSettingsOperationStatus_ACCOUNT_SETTINGS_OPERATION_STATUS_VERIFIED, TwoFactorStatus: status}
+	}
+	return EngineAccountSettingsResult{Status: waappv1.AccountSettingsOperationStatus_ACCOUNT_SETTINGS_OPERATION_STATUS_REJECTED, Err: NewError(waappv1.WaErrorCode_WA_ERROR_CODE_REJECTED, "WA set email was not accepted for verification", false)}
 }
 
 func emailOtpRequestResultFromIQ(node chatdNode) EngineAccountSettingsResult {
@@ -242,13 +250,25 @@ func emailOtpRequestResultFromIQ(node chatdNode) EngineAccountSettingsResult {
 func emailOtpVerifyResultFromIQ(node chatdNode) EngineAccountSettingsResult {
 	verifyNode, ok := chatdChild(node, "verify_email")
 	if !ok {
-		return EngineAccountSettingsResult{Status: waappv1.AccountSettingsOperationStatus_ACCOUNT_SETTINGS_OPERATION_STATUS_ACCEPTED}
+		return malformedAccountSettingsResult("WA email OTP verify response is missing verify_email")
+	}
+	codeMatch, ok := chatdNodeBoolValue(verifyNode, "code_match")
+	if !ok {
+		return malformedAccountSettingsResult("WA email OTP verify response is missing code_match")
 	}
 	status := waappv1.AccountSettingsOperationStatus_ACCOUNT_SETTINGS_OPERATION_STATUS_CODE_MISMATCH
-	if chatdNodeBool(verifyNode, "code_match") {
+	if codeMatch {
 		status = waappv1.AccountSettingsOperationStatus_ACCOUNT_SETTINGS_OPERATION_STATUS_VERIFIED
 	}
-	return EngineAccountSettingsResult{Status: status, WaitTime: chatdNodeDuration(verifyNode, "wait_time")}
+	result := EngineAccountSettingsResult{Status: status, WaitTime: chatdNodeDuration(verifyNode, "wait_time")}
+	if status == waappv1.AccountSettingsOperationStatus_ACCOUNT_SETTINGS_OPERATION_STATUS_VERIFIED {
+		result.TwoFactorStatus = &waappv1.TwoFactorAuthStatus{EmailConfigured: true, EmailVerified: true}
+	}
+	return result
+}
+
+func malformedAccountSettingsResult(message string) EngineAccountSettingsResult {
+	return EngineAccountSettingsResult{Status: waappv1.AccountSettingsOperationStatus_ACCOUNT_SETTINGS_OPERATION_STATUS_REJECTED, Err: NewError(waappv1.WaErrorCode_WA_ERROR_CODE_REJECTED, message, false)}
 }
 
 func accountSettingsRetryableError(err error) bool {

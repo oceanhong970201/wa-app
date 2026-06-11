@@ -2,7 +2,7 @@ import { AccountSettingsOperationStatus } from '../proto/byte/v/forge/waapp/v1/a
 import type { GetTwoFactorAuthStatusResponse, TwoFactorAuthStatus } from '../proto/byte/v/forge/waapp/v1/account_settings';
 import type { BadgeVariant } from './ui';
 
-export type TwoFactorStatusView = { isFetching: boolean; isError: boolean; data?: { status?: { configured?: boolean; email_configured?: boolean } } };
+export type TwoFactorStatusView = { isFetching: boolean; isError: boolean; data?: { status?: TwoFactorAuthStatus } };
 
 export function initialTwoFactorStatus(status?: TwoFactorAuthStatus): GetTwoFactorAuthStatusResponse {
   return status ? { status, error: undefined } : { status: undefined, error: undefined };
@@ -30,6 +30,8 @@ export function emailStatusLabel(query: TwoFactorStatusView) {
   if (query.isFetching) return '同步中';
   if (query.isError) return '同步失败';
   if (!query.data?.status) return '未同步';
+  if (query.data.status.email_verified) return '已验证';
+  if (query.data.status.email_address) return '待验证';
   return query.data.status.email_configured ? '已配置' : '未配置';
 }
 
@@ -40,7 +42,8 @@ export function twoFactorBadgeVariant(query: TwoFactorStatusView): BadgeVariant 
 
 export function emailBadgeVariant(query: TwoFactorStatusView): BadgeVariant {
   if (query.isError) return 'destructive';
-  return query.data?.status?.email_configured ? 'default' : 'outline';
+  if (query.data?.status?.email_verified) return 'default';
+  return query.data?.status?.email_address || query.data?.status?.email_configured ? 'secondary' : 'outline';
 }
 
 export function twoFactorConfigured(query: TwoFactorStatusView) {
@@ -48,7 +51,7 @@ export function twoFactorConfigured(query: TwoFactorStatusView) {
 }
 
 export function twoFactorEmailConfigured(query: TwoFactorStatusView) {
-  return Boolean(query.data?.status?.email_configured);
+  return Boolean(query.data?.status?.email_configured || query.data?.status?.email_address);
 }
 
 export function statusLabel(status?: AccountSettingsOperationStatus) {

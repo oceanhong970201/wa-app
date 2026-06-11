@@ -34,7 +34,18 @@ export function WaAccountSecurityPanel({ account, onDone, onError }: Props) {
   const handleSuccess = (message: string, status?: AccountSettingsOperationStatus) => { setLastStatus(status); onDone(message); };
   const accountID = waAccountID(account);
   const statusKey = useMemo(() => waKeys.twoFactorStatus(accountID), [accountID]);
-  const patchStatus = (patch: Partial<NonNullable<GetTwoFactorAuthStatusResponse['status']>>) => queryClient.setQueryData<GetTwoFactorAuthStatusResponse>(statusKey, (previous) => ({ error: previous?.error, status: { configured: previous?.status?.configured || false, email_configured: previous?.status?.email_configured || false, ...patch } }));
+  const patchStatus = (patch: Partial<NonNullable<GetTwoFactorAuthStatusResponse['status']>>) =>
+    queryClient.setQueryData<GetTwoFactorAuthStatusResponse>(statusKey, (previous) => ({
+      error: previous?.error,
+      status: {
+        configured: previous?.status?.configured || false,
+        email_configured: previous?.status?.email_configured || false,
+        email_verified: previous?.status?.email_verified || false,
+        email_confirmed: previous?.status?.email_confirmed || false,
+        email_address: previous?.status?.email_address || '',
+        ...patch,
+      },
+    }));
   const twoFactorStatus = useQuery({
     queryKey: statusKey,
     queryFn: () => getWaTwoFactorAuthStatus(account, { remoteRefresh: true }),
@@ -63,9 +74,15 @@ export function WaAccountSecurityPanel({ account, onDone, onError }: Props) {
       const setStatus = resp.operation?.status;
       setEmailOtpVisible(shouldCollectEmailOtpAfterSet(setStatus));
       setEmailEditing(false);
+      if (setStatus !== AccountSettingsOperationStatus.ACCOUNT_SETTINGS_OPERATION_STATUS_REJECTED) {
+        patchStatus({
+          email_address: email,
+          email_configured: true,
+          email_verified: setStatus === AccountSettingsOperationStatus.ACCOUNT_SETTINGS_OPERATION_STATUS_VERIFIED,
+        });
+      }
       if (setStatus === AccountSettingsOperationStatus.ACCOUNT_SETTINGS_OPERATION_STATUS_VERIFIED) {
         setEmailOtp('');
-        patchStatus({ email_configured: true });
       }
       handleSuccess(emailConfigured ? '账户邮箱修改请求已提交' : '账户邮箱设置请求已提交', setStatus);
     },
@@ -85,7 +102,7 @@ export function WaAccountSecurityPanel({ account, onDone, onError }: Props) {
       const status = resp.operation?.status;
       setEmailOtp('');
       setEmailOtpVisible(shouldShowEmailOtp(status));
-      if (status === AccountSettingsOperationStatus.ACCOUNT_SETTINGS_OPERATION_STATUS_VERIFIED) patchStatus({ email_configured: true });
+      if (status === AccountSettingsOperationStatus.ACCOUNT_SETTINGS_OPERATION_STATUS_VERIFIED) patchStatus({ email_configured: true, email_verified: true });
       handleSuccess('邮箱 OTP 校验请求已提交', status);
     },
     onError: handleError,
@@ -118,6 +135,7 @@ export function WaAccountSecurityPanel({ account, onDone, onError }: Props) {
         </section>
         <section className="grid gap-3">
           <SettingHeader icon={<Mail size={15} />} title={emailAction} badge={<Badge variant={emailBadgeVariant(twoFactorStatus)}>{emailStatusLabel(twoFactorStatus)}</Badge>} canEdit={emailConfigured && !emailEditing && !busy} onEdit={() => setEmailEditing(true)} />
+          {emailConfigured && !emailEditing ? <EmailProjection status={twoFactorStatus.data?.status} /> : null}
           {emailFormVisible ? <EmailForm email={email} busy={busy} configured={emailConfigured} onEmailChange={handleEmailChange} onCancel={() => { setEmail(''); setEmailEditing(false); }} onSubmit={(event) => submit(event, emailSet.mutate)} /> : null}
         </section>
         {emailOtpVisible && (
@@ -137,6 +155,10 @@ export function WaAccountSecurityPanel({ account, onDone, onError }: Props) {
 
 function SettingHeader({ icon, title, badge, canEdit, onEdit }: { icon: ReactNode; title: string; badge: ReactNode; canEdit: boolean; onEdit: () => void }) {
   return <div className="flex items-center justify-between gap-2"><div className="inline-flex items-center gap-2 text-sm font-medium">{icon}{title}{badge}</div>{canEdit ? <Button size="icon" variant="ghost" type="button" title={title} aria-label={title} onClick={onEdit}><Pencil size={16} /></Button> : null}</div>;
+}
+
+function EmailProjection({ status }: { status?: NonNullable<GetTwoFactorAuthStatusResponse['status']> }) {
+  return status?.email_address ? <div className="truncate text-sm text-muted-foreground">{status.email_address}</div> : null;
 }
 
 function PinForm({ pin, busy, configured, onPinChange, onCancel, onSubmit }: { pin: string; busy: boolean; configured: boolean; onPinChange: (value: string) => void; onCancel: () => void; onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {

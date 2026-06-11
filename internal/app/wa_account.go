@@ -59,6 +59,9 @@ func cloneTwoFactorAuthStatus(status *waappv1.TwoFactorAuthStatus) *waappv1.TwoF
 	return &waappv1.TwoFactorAuthStatus{
 		Configured:      status.GetConfigured(),
 		EmailConfigured: status.GetEmailConfigured(),
+		EmailAddress:    strings.TrimSpace(status.GetEmailAddress()),
+		EmailVerified:   status.GetEmailVerified(),
+		EmailConfirmed:  status.GetEmailConfirmed(),
 	}
 }
 

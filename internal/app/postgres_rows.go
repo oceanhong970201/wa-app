@@ -2,6 +2,7 @@ package app
 
 import (
 	"database/sql"
+	"strings"
 	"time"
 
 	waappv1 "github.com/byte-v-forge/wa-app/gen/go/byte/v/forge/waapp/v1"
@@ -119,6 +120,9 @@ type waAccountRow struct {
 	status                   string
 	twoFactorConfigured      sql.NullBool
 	twoFactorEmailConfigured sql.NullBool
+	twoFactorEmailAddress    sql.NullString
+	twoFactorEmailVerified   sql.NullBool
+	twoFactorEmailConfirmed  sql.NullBool
 	createdAt                time.Time
 	updatedAt                time.Time
 }
@@ -130,10 +134,13 @@ func (r waAccountRow) toProto() *waappv1.WAAccount {
 		NationalNumber:     r.national,
 		CountryIso2:        r.iso2,
 	}, waappv1.WAAccountStatus(waappv1.WAAccountStatus_value[r.status]), audit(r.createdAt, r.updatedAt))
-	if r.twoFactorConfigured.Valid || r.twoFactorEmailConfigured.Valid {
+	if r.twoFactorConfigured.Valid || r.twoFactorEmailConfigured.Valid || r.twoFactorEmailAddress.Valid || r.twoFactorEmailVerified.Valid || r.twoFactorEmailConfirmed.Valid {
 		account.TwoFactorAuth = &waappv1.TwoFactorAuthStatus{
 			Configured:      r.twoFactorConfigured.Bool,
 			EmailConfigured: r.twoFactorEmailConfigured.Bool,
+			EmailAddress:    r.twoFactorEmailAddress.String,
+			EmailVerified:   r.twoFactorEmailVerified.Bool,
+			EmailConfirmed:  r.twoFactorEmailConfirmed.Bool,
 		}
 	}
 	return account
@@ -151,6 +158,27 @@ func nullableTwoFactorEmailConfigured(status *waappv1.TwoFactorAuthStatus) sql.N
 		return sql.NullBool{}
 	}
 	return sql.NullBool{Bool: status.GetEmailConfigured(), Valid: true}
+}
+
+func nullableTwoFactorEmailAddress(status *waappv1.TwoFactorAuthStatus) sql.NullString {
+	if status == nil || strings.TrimSpace(status.GetEmailAddress()) == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: strings.TrimSpace(status.GetEmailAddress()), Valid: true}
+}
+
+func nullableTwoFactorEmailVerified(status *waappv1.TwoFactorAuthStatus) sql.NullBool {
+	if status == nil {
+		return sql.NullBool{}
+	}
+	return sql.NullBool{Bool: status.GetEmailVerified(), Valid: true}
+}
+
+func nullableTwoFactorEmailConfirmed(status *waappv1.TwoFactorAuthStatus) sql.NullBool {
+	if status == nil {
+		return sql.NullBool{}
+	}
+	return sql.NullBool{Bool: status.GetEmailConfirmed(), Valid: true}
 }
 
 type clientProfileRow struct {

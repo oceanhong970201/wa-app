@@ -78,7 +78,7 @@ func (s *Server) SetAccountEmail(ctx context.Context, req *waappv1.SetAccountEma
 	if err != nil {
 		return &waappv1.SetAccountEmailResponse{Error: ToProtoError(err)}, nil
 	}
-	op, err := s.applyAccountSettings(ctx, req.GetContext(), req.GetSelector(), waappv1.AccountSettingsOperationKind_ACCOUNT_SETTINGS_OPERATION_KIND_ACCOUNT_EMAIL_SET, func(input EngineAccountSettingsInput) EngineAccountSettingsInput {
+	op, result, err := s.applyAccountSettingsResult(ctx, req.GetContext(), req.GetSelector(), waappv1.AccountSettingsOperationKind_ACCOUNT_SETTINGS_OPERATION_KIND_ACCOUNT_EMAIL_SET, func(input EngineAccountSettingsInput) EngineAccountSettingsInput {
 		input.EmailAddress = emailAddress
 		input.GoogleIDToken = googleIDToken
 		return input
@@ -86,9 +86,13 @@ func (s *Server) SetAccountEmail(ctx context.Context, req *waappv1.SetAccountEma
 	if err != nil {
 		return &waappv1.SetAccountEmailResponse{Error: ToProtoError(err)}, nil
 	}
-	if op.GetError() == nil && op.GetStatus() == waappv1.AccountSettingsOperationStatus_ACCOUNT_SETTINGS_OPERATION_STATUS_VERIFIED {
+	if op.GetError() == nil {
 		if err := s.patchTwoFactorAuthStatus(ctx, op.GetWaAccountId(), accountSettingsCompletedAt(op, s.clock.Now()), func(status *waappv1.TwoFactorAuthStatus) {
-			status.EmailConfigured = true
+			mergeTwoFactorAuthStatus(status, result.TwoFactorStatus)
+			if status.GetEmailAddress() == "" {
+				status.EmailAddress = emailAddress
+			}
+			status.EmailConfigured = status.GetEmailConfigured() || status.GetEmailAddress() != ""
 		}); err != nil {
 			return &waappv1.SetAccountEmailResponse{Operation: op, Error: ToProtoError(err)}, nil
 		}
@@ -132,7 +136,7 @@ func (s *Server) VerifyAccountEmailOtp(ctx context.Context, req *waappv1.VerifyA
 	}
 	if op.GetError() == nil && op.GetStatus() == waappv1.AccountSettingsOperationStatus_ACCOUNT_SETTINGS_OPERATION_STATUS_VERIFIED {
 		if err := s.patchTwoFactorAuthStatus(ctx, op.GetWaAccountId(), accountSettingsCompletedAt(op, s.clock.Now()), func(status *waappv1.TwoFactorAuthStatus) {
-			status.EmailConfigured = true
+			mergeTwoFactorAuthStatus(status, &waappv1.TwoFactorAuthStatus{EmailConfigured: true, EmailVerified: true})
 		}); err != nil {
 			return &waappv1.VerifyAccountEmailOtpResponse{Operation: op, Error: ToProtoError(err)}, nil
 		}
@@ -310,8 +314,37 @@ func (s *Server) saveTwoFactorAuthStatusForAccount(ctx context.Context, account 
 	if updatedAt.IsZero() {
 		updatedAt = s.clock.Now()
 	}
-	_, err := s.saveWAAccount(ctx, withWAAccountTwoFactorAuthStatus(account, status, updatedAt))
+	_, err := s.saveWAAccount(ctx, withWAAccountTwoFactorAuthStatus(account, preserveTwoFactorEmailProjection(account.GetTwoFactorAuth(), status), updatedAt))
 	return err
+}
+
+func preserveTwoFactorEmailProjection(current *waappv1.TwoFactorAuthStatus, next *waappv1.TwoFactorAuthStatus) *waappv1.TwoFactorAuthStatus {
+	out := cloneTwoFactorAuthStatus(next)
+	if out == nil || current == nil {
+		return out
+	}
+	if strings.TrimSpace(out.GetEmailAddress()) == "" {
+		out.EmailAddress = strings.TrimSpace(current.GetEmailAddress())
+	}
+	if out.GetEmailAddress() != "" {
+		out.EmailConfigured = out.GetEmailConfigured() || current.GetEmailConfigured()
+		out.EmailVerified = out.GetEmailVerified() || current.GetEmailVerified()
+		out.EmailConfirmed = out.GetEmailConfirmed() || current.GetEmailConfirmed()
+	}
+	return out
+}
+
+func mergeTwoFactorAuthStatus(status *waappv1.TwoFactorAuthStatus, patch *waappv1.TwoFactorAuthStatus) {
+	if status == nil || patch == nil {
+		return
+	}
+	status.Configured = status.GetConfigured() || patch.GetConfigured()
+	status.EmailConfigured = status.GetEmailConfigured() || patch.GetEmailConfigured()
+	if strings.TrimSpace(patch.GetEmailAddress()) != "" {
+		status.EmailAddress = strings.TrimSpace(patch.GetEmailAddress())
+	}
+	status.EmailVerified = status.GetEmailVerified() || patch.GetEmailVerified()
+	status.EmailConfirmed = status.GetEmailConfirmed() || patch.GetEmailConfirmed()
 }
 
 func (s *Server) accountSettingsAccountID(ctx context.Context, selector *waappv1.AccountLoginSelector) (string, error) {

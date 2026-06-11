@@ -129,12 +129,47 @@ func chatdNodeText(node chatdNode) string {
 }
 
 func chatdNodeBool(node chatdNode, name string) bool {
-	switch strings.ToLower(chatdNodeValue(node, name)) {
-	case "true", "1", "yes", "ok", "success":
-		return true
-	default:
-		return false
+	value, _ := chatdNodeBoolValue(node, name)
+	return value
+}
+
+func chatdNodeBoolValue(node chatdNode, name string) (bool, bool) {
+	value, ok := chatdNodeStringValue(node, name)
+	if !ok {
+		return false, false
 	}
+	switch strings.ToLower(value) {
+	case "true", "1", "yes", "ok", "success":
+		return true, true
+	case "false", "0", "no", "fail", "failed":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func chatdNodeStringValue(node chatdNode, name string) (string, bool) {
+	if value := strings.TrimSpace(node.Attrs[name]); value != "" {
+		return value, true
+	}
+	child, ok := chatdChild(node, name)
+	if !ok {
+		return "", false
+	}
+	if value := strings.TrimSpace(chatdNodeText(child)); value != "" {
+		return value, true
+	}
+	for _, attr := range []string{"status", "result", "code"} {
+		if value := strings.TrimSpace(child.Attrs[attr]); value != "" {
+			return value, true
+		}
+	}
+	return "", true
+}
+
+func chatdNodeStatus(node chatdNode, name string) string {
+	value, _ := chatdNodeStringValue(node, name)
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 func chatdNodeDuration(node chatdNode, name string) time.Duration {
