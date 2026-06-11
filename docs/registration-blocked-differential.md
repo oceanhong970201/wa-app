@@ -36,4 +36,6 @@
 
 `/v2/code` 的 `too_recent` 不是号码封禁；App 响应可能携带 `sms_wait` / `voice_wait` / `flash_wait` / `wa_old_wait` / `email_otp_wait` / `send_sms_wait` / `silent_auth_wait` 和 `retry_after`。运行态现在会把这类响应归一为 `VERIFICATION_REQUEST_STATUS_REJECTED` + retryable rate-limit error，并在 `VerificationCodeRequestRecord.retry_after`、`method_statuses` 与 action JSON `retry_after_seconds` / `method_statuses` 中透出冷却秒数；`StartRegistration` 会返回 `registration_phase=OTP_COOLDOWN`，且不会把冷却误当成 OTP 已发送。
 
-APK 的冷却是按通道生效：专属 wait 字段优先，缺失时才对可见/请求通道使用 `retry_after` 兜底。`too_recent` 只代表当前请求或当前通道太频繁，不能直接把所有注册/登录通道置为不可用；只有 blocked、号码格式异常或协议级拒绝才应全局停止。
+APK 的冷却是按通道生效：真实可见 fallback 先从 `pref_reg_methods_order`（默认 `flash,sms,voice`）删除 wait 缺失或 `-1` 的 method，再与 `fallback_methods` 求交集，并叠加本地 eligibility/capability。`too_recent` 只代表当前请求或当前通道太频繁，不能直接把所有协议 taxonomy 都展示为可尝试通道；只有 blocked、号码格式异常或协议级拒绝才应全局停止。
+
+对当前 +86 样本，应按 APK UI 语义理解为 `visible_methods=[flash,sms]`：`flash` 是 Android 设备侧未接来电验证，本服务不作为普通服务端直发通道；`sms` 可见但处于 cooldown，需要置灰并显示倒计时。

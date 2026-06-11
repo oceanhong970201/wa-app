@@ -320,6 +320,11 @@ func registrationProbeSMSStatus(result EngineProbeResult) string {
 
 func registrationCodeResultPhoneStatus(result EngineCodeResult, method waappv1.VerificationDeliveryMethod, failed bool) map[string]any {
 	smsStatus, smsAvailable, smsWaitSeconds := registrationCodeSMSStatus(result.MethodStatuses)
+	if method == waappv1.VerificationDeliveryMethod_VERIFICATION_DELIVERY_METHOD_SMS && smsStatus == "UNKNOWN" && result.RetryAfter > 0 {
+		smsStatus = "COOLDOWN"
+		smsAvailable = false
+		smsWaitSeconds = int64(result.RetryAfter / time.Second)
+	}
 	registrationPhaseValue := registrationPhase(!failed, "accepted", result.RetryAfter)
 	if failed {
 		registrationPhaseValue = "OTP_REQUEST_FAILED"

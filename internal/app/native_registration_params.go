@@ -332,7 +332,6 @@ func parseExistProbeResult(data map[string]any) EngineProbeResult {
 	registeredKnown := registered || invalidNumber
 	smsRouteUnavailable := existRouteUnavailableReason(reason)
 	canSendSMS := smsProbeAvailableByCooldownOnly(smsWait, smsWaitExhausted, blocked, protocolRejected, invalidNumber, rateLimited, smsRouteUnavailable)
-	methodStatuses = ensureSMSMethodStatus(methodStatuses, smsWait > 0 || smsWaitExhausted || canSendSMS, canSendSMS, smsWait)
 	methods := methodsFromStatuses(methodStatuses)
 	reachable := !protocolRejected && !blocked && !invalidNumber && !rateLimited && (existReachableStatus(status) || registered || notRegistered || status != "" || reason != "")
 	result := EngineProbeResult{
@@ -554,36 +553,18 @@ type verificationWaitStatus struct {
 	Present   bool
 }
 
-var apkCooldownMethodCodes = []string{"sms", "voice", "flash", "wa_old", "email_otp", "send_sms", "silent_auth"}
+var apkDefaultRegistrationMethodOrder = []string{"flash", "sms", "voice"}
 
-func verificationMethodStatuses(data map[string]any, methods []waappv1.VerificationDeliveryMethod) []VerificationMethodStatus {
+func verificationMethodStatuses(data map[string]any, _ []waappv1.VerificationDeliveryMethod) []VerificationMethodStatus {
 	out := []VerificationMethodStatus{}
-	for _, code := range fallbackVerificationMethodCodes(data) {
-		if !verificationMethodVisibleForProbe(data, code) {
-			continue
-		}
-		out = upsertVerificationMethodStatus(out, code, verificationMethodWaitStatus(data, code, true))
-	}
-	for _, method := range methods {
-		code := registrationMethodName(method, "")
-		if code == "" {
-			continue
-		}
-		out = upsertVerificationMethodStatus(out, code, verificationMethodWaitStatus(data, code, true))
-	}
-	for _, code := range apkCooldownMethodCodes {
-		wait := verificationMethodWaitStatus(data, code, false)
-		if wait.Present {
-			out = upsertVerificationMethodStatus(out, code, wait)
-		}
+	for _, code := range apkVisibleFallbackMethodCodes(data) {
+		out = upsertVerificationMethodStatus(out, code, verificationMethodWaitStatus(data, code, false))
 	}
 	return out
 }
 
-func verificationCodeMethodStatuses(data map[string]any, method waappv1.VerificationDeliveryMethod) []VerificationMethodStatus {
-	statuses := verificationMethodStatuses(data, []waappv1.VerificationDeliveryMethod{method})
-	code := registrationMethodName(method, "sms")
-	return upsertVerificationMethodStatus(statuses, code, verificationMethodWaitStatus(data, code, true))
+func verificationCodeMethodStatuses(data map[string]any, _ waappv1.VerificationDeliveryMethod) []VerificationMethodStatus {
+	return verificationMethodStatuses(data, nil)
 }
 
 func upsertVerificationMethodStatus(statuses []VerificationMethodStatus, code string, wait verificationWaitStatus) []VerificationMethodStatus {
@@ -643,9 +624,20 @@ func verificationMethodCode(name string) string {
 }
 
 func fallbackVerificationMethodCodes(data map[string]any) []string {
+	return verificationMethodCodesFromValue(data["fallback_methods"])
+}
+
+func prefRegistrationMethodOrderCodes(data map[string]any) []string {
+	if codes := verificationMethodCodesFromValue(data["pref_reg_methods_order"]); len(codes) > 0 {
+		return codes
+	}
+	return append([]string(nil), apkDefaultRegistrationMethodOrder...)
+}
+
+func verificationMethodCodesFromValue(value any) []string {
 	seen := map[string]struct{}{}
 	out := []string{}
-	for _, raw := range stringList(data["fallback_methods"]) {
+	for _, raw := range stringList(value) {
 		code := verificationMethodCode(raw)
 		if code == "" {
 			continue
@@ -659,17 +651,53 @@ func fallbackVerificationMethodCodes(data map[string]any) []string {
 	return out
 }
 
+func apkVisibleFallbackMethodCodes(data map[string]any) []string {
+	fallback := fallbackVerificationMethodCodeSet(data)
+	if len(fallback) == 0 {
+		return nil
+	}
+	out := []string{}
+	for _, code := range prefRegistrationMethodOrderCodes(data) {
+		if !fallback[code] {
+			continue
+		}
+		wait := verificationMethodWaitStatus(data, code, false)
+		if !wait.Present || wait.Exhausted {
+			continue
+		}
+		if !verificationMethodEligibleForAPKUI(data, code) {
+			continue
+		}
+		out = append(out, code)
+	}
+	return out
+}
+
+func fallbackVerificationMethodCodeSet(data map[string]any) map[string]bool {
+	codes := fallbackVerificationMethodCodes(data)
+	if len(codes) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(codes))
+	for _, code := range codes {
+		out[code] = true
+	}
+	return out
+}
+
 func waOldFallbackEligible(data map[string]any) bool {
 	for _, code := range fallbackVerificationMethodCodes(data) {
 		if code == "wa_old" {
-			return verificationMethodVisibleForProbe(data, code)
+			return verificationMethodEligibleForAPKUI(data, code)
 		}
 	}
 	return false
 }
 
-func verificationMethodVisibleForProbe(data map[string]any, code string) bool {
+func verificationMethodEligibleForAPKUI(data map[string]any, code string) bool {
 	switch code {
+	case "sms", "voice", "flash":
+		return true
 	case "wa_old":
 		eligibility, ok := firstPresentJSONInt64(data["pref_wa_old_eligibility"], data["wa_old_eligible"])
 		if !ok {
@@ -677,15 +705,39 @@ func verificationMethodVisibleForProbe(data map[string]any, code string) bool {
 		}
 		return eligibility != 0 && eligibility != 4
 	case "send_sms":
-		return true
-	case "sms", "voice", "flash", "passkey", "silent_auth", "silent_auth_ts_43", "autoconf", "deeplink_otp", "recaptcha", "oauth_email", "discoverable_credential", "acc_tr", "standalone":
-		return true
+		return verificationExplicitlyEligible(data, "pref_send_sms_eligibility", "send_sms_eligible", "can_send_sms_to_wa") && !verificationExplicitlyExhausted(data, "send_sms_attempts_exhausted", "pref_send_sms_attempts_exhausted")
 	case "email_otp":
 		eligibility, ok := firstPresentJSONInt64(data["pref_email_otp_eligibility"], data["email_otp_eligible"])
-		return !ok || eligibility == 1
+		return ok && eligibility == 1
+	case "silent_auth", "silent_auth_ts_43":
+		return verificationExplicitlyEligible(data, "pref_silent_auth_eligibility", "silent_auth_eligible", "silent_auth_available")
 	default:
 		return false
 	}
+}
+
+func verificationExplicitlyEligible(data map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		if value, ok := data[key].(bool); ok {
+			return value
+		}
+		if value, ok := firstPresentJSONInt64(data[key]); ok {
+			return value == 1
+		}
+	}
+	return false
+}
+
+func verificationExplicitlyExhausted(data map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		if value, ok := data[key].(bool); ok && value {
+			return true
+		}
+		if value, ok := firstPresentJSONInt64(data[key]); ok && value != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func verificationMethodWaitStatus(data map[string]any, code string, includeRetryAfter bool) verificationWaitStatus {
@@ -727,27 +779,6 @@ func verificationSMSWaitExhausted(data map[string]any) bool {
 
 func smsProbeAvailableByCooldownOnly(smsWait int64, smsWaitExhausted bool, blocked bool, protocolRejected bool, invalidNumber bool, rateLimited bool, routeUnavailable bool) bool {
 	return smsWait <= 0 && !smsWaitExhausted && !blocked && !protocolRejected && !invalidNumber && !rateLimited && !routeUnavailable
-}
-
-func ensureSMSMethodStatus(statuses []VerificationMethodStatus, visible bool, available bool, cooldownSeconds int64) []VerificationMethodStatus {
-	if !visible {
-		return statuses
-	}
-	for i := range statuses {
-		if statuses[i].Code == "sms" || statuses[i].Method == waappv1.VerificationDeliveryMethod_VERIFICATION_DELIVERY_METHOD_SMS {
-			statuses[i].Code = "sms"
-			statuses[i].Method = waappv1.VerificationDeliveryMethod_VERIFICATION_DELIVERY_METHOD_SMS
-			statuses[i].Available = available
-			statuses[i].CooldownSeconds = cooldownSeconds
-			return statuses
-		}
-	}
-	return append(statuses, VerificationMethodStatus{
-		Method:          waappv1.VerificationDeliveryMethod_VERIFICATION_DELIVERY_METHOD_SMS,
-		Code:            "sms",
-		Available:       available,
-		CooldownSeconds: cooldownSeconds,
-	})
 }
 
 func stringList(value any) []string {

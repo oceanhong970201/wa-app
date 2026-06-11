@@ -40,9 +40,10 @@ export function WaAccountAdd({ disabled, onChanged, onDone, onError }: Props) {
   const showChannels = Boolean(channelStatus && !pending);
   const channelsHardBlocked = registrationChannelsHardBlocked(channelStatus);
   const canRegister = samePhone && registrationAnyMethodAvailable(channelStatus, cooldownElapsedSeconds) && !channelsHardBlocked;
+  const detected = samePhone && Boolean(channelStatus);
   const showHelp = pending || blocked || canRegister || Boolean(activeRegistrationResult);
-  const badgeVariant = pending ? 'default' : blocked ? 'destructive' : canRegister ? 'default' : 'outline';
-  const badgeLabel = pending ? '等待 OTP' : blocked ? '已封禁' : canRegister ? '可注册' : '待检测';
+  const badgeVariant = pending ? 'default' : blocked ? 'destructive' : canRegister ? 'default' : detected ? 'secondary' : 'outline';
+  const badgeLabel = pending ? '等待 OTP' : blocked ? '已封禁' : canRegister ? '可注册' : detected ? '无可直发' : '待检测';
 
   useEffect(() => {
     const activeResult = activeRegistrationResult || (samePhone ? probe?.result : null);
@@ -149,7 +150,7 @@ export function WaAccountAdd({ disabled, onChanged, onDone, onError }: Props) {
           <Field>
             <FieldLabel>注册 / 登录通道</FieldLabel>
             <WaRegistrationChannelButtons status={channelStatus} elapsedSeconds={cooldownElapsedSeconds} disabled={busy || disabled || Boolean(pending) || channelsHardBlocked} onStart={(method) => void startRegistration(method)} />
-            <FieldDescription>检测后只显示当前可用通道；冷却中的通道会显示倒计时。</FieldDescription>
+            <FieldDescription>检测后按 APK 可见 fallback 展示；设备侧通道仅提示，冷却通道显示倒计时。</FieldDescription>
           </Field>
         )}
         {showHelp && <Alert variant={blocked ? 'destructive' : 'default'}>

@@ -100,7 +100,7 @@ export function methodLabel(value: string) {
   if (normalized === 'PASSWORD') return '密码';
   if (normalized === 'WIPE_FULL') return '完整重置';
   if (normalized === 'WIPE_OFFLINE') return '离线重置';
-  if (normalized === 'FLASH') return 'Flash';
+  if (normalized === 'FLASH') return '未接来电';
   return normalized.replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, (char) => char.toUpperCase());
 }
 

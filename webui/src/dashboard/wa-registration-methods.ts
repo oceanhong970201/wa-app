@@ -11,6 +11,10 @@ export type RegistrationMethodOption = {
 export type SelectableRegistrationMethodOption = Omit<RegistrationMethodOption, 'value'> & {
   value: VerificationDeliveryMethod;
 };
+export type RegistrationChannelMethodOption = SelectableRegistrationMethodOption & {
+  directRequest: boolean;
+  disabledReason?: string;
+};
 
 export const selectableRegistrationMethods: SelectableRegistrationMethodOption[] = [
   methodOption(VerificationDeliveryMethod.VERIFICATION_DELIVERY_METHOD_SMS, 'sms', '服务端下发短信验证码'),
@@ -18,6 +22,10 @@ export const selectableRegistrationMethods: SelectableRegistrationMethodOption[]
   methodOption(VerificationDeliveryMethod.VERIFICATION_DELIVERY_METHOD_WA_OLD, 'wa_old', '旧设备 / 已登录 WhatsApp 验证'),
   methodOption(VerificationDeliveryMethod.VERIFICATION_DELIVERY_METHOD_EMAIL_OTP, 'email_otp', '邮箱验证码'),
   methodOption(VerificationDeliveryMethod.VERIFICATION_DELIVERY_METHOD_SEND_SMS, 'send_sms', '从本机发送短信到 WhatsApp'),
+];
+export const visibleRegistrationChannelMethods: RegistrationChannelMethodOption[] = [
+  channelMethodOption(VerificationDeliveryMethod.VERIFICATION_DELIVERY_METHOD_FLASH, 'flash', 'Flash Call / 未接来电验证，需要 Android 设备侧监听', false, '需要设备侧未接来电流程'),
+  ...selectableRegistrationMethods.map((method) => ({ ...method, directRequest: true })),
 ];
 
 export const apkSupportedLoginRegistrationMethods = [
@@ -43,14 +51,7 @@ export const apkSupportedLoginRegistrationMethods = [
 ];
 
 export function registrationMethodStatus(status: WaProbeStatus, method: VerificationDeliveryMethod) {
-  const methodStatus = status.methodStatuses.find((item) => methodStatusMatches(item, method));
-  if (method === VerificationDeliveryMethod.VERIFICATION_DELIVERY_METHOD_SMS) {
-    return {
-      available: methodStatus?.available ?? status.smsAvailable,
-      cooldownSeconds: methodStatus?.cooldownSeconds ?? status.smsWaitSeconds,
-    };
-  }
-  return methodStatus;
+  return status.methodStatuses.find((item) => methodStatusMatches(item, method));
 }
 
 export function registrationMethodCooldownSeconds(status: WaProbeStatus, method: VerificationDeliveryMethod, elapsedSeconds = 0) {
@@ -77,6 +78,10 @@ export function registrationChannelsHardBlocked(status: WaProbeStatus | null) {
 
 function methodOption(value: VerificationDeliveryMethod, code: string, description: string): SelectableRegistrationMethodOption {
   return { value, code, label: methodLabel(code), description };
+}
+
+function channelMethodOption(value: VerificationDeliveryMethod, code: string, description: string, directRequest: boolean, disabledReason?: string): RegistrationChannelMethodOption {
+  return { ...methodOption(value, code, description), directRequest, disabledReason };
 }
 
 function loginMethodOption(value: RegistrationLoginMethod, code: string, description: string): RegistrationMethodOption {
