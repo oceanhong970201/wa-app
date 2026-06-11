@@ -30,6 +30,7 @@ type RailProps = { accounts: WAAccount[]; selectedID: string; avatarVersion: str
 type AccountItemProps = { account: WAAccount; selected: boolean; avatarVersion: string; connection?: LongConnectionState; loading: boolean };
 
 const railButtonClass = 'h-12 gap-2 p-1! group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:size-12! group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:p-1!';
+const accountActionClass = 'top-1/2! right-2! size-7! -translate-y-1/2 rounded-lg';
 const collapsedTextClass = 'group-data-[collapsible=icon]:hidden';
 
 export function WaAccountRail({ accounts, selectedID, avatarVersion, connections, loading, connectionsLoading, hasNextPage, loadingMore, onLoadMore }: RailProps) {
@@ -88,7 +89,7 @@ function AccountItem({ account, selected, avatarVersion, connection, loading }: 
           </span>
         </NavLink>
       </SidebarMenuButton>
-      <SidebarMenuAction asChild showOnHover={!selected}>
+      <SidebarMenuAction asChild showOnHover={!selected} className={accountActionClass}>
         <Link to={waAccountPath(id)} title="账号详情" aria-label={`${title} 账号详情`}><Info /></Link>
       </SidebarMenuAction>
     </SidebarMenuItem>
