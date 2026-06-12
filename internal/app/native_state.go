@@ -321,7 +321,26 @@ var nativeOperators = map[string][][2]string{
 	"US":   {{"310", "260"}, {"310", "410"}, {"311", "480"}},
 	"CN":   {{"460", "00"}, {"460", "01"}, {"460", "11"}},
 	"PL":   {{"260", "01"}, {"260", "02"}, {"260", "06"}},
+	"VN":   {{"452", "04"}, {"452", "02"}, {"452", "01"}, {"452", "05"}, {"452", "07"}},
 	"NONE": {{"", ""}},
+}
+
+func nativeProfileCountry(phone *waappv1.PhoneTarget) string {
+	if country := strings.ToUpper(strings.TrimSpace(phone.GetCountryIso2())); country != "" {
+		return country
+	}
+	switch phoneCC(phone) {
+	case "1":
+		return "US"
+	case "48":
+		return "PL"
+	case "84":
+		return "VN"
+	case "86":
+		return "CN"
+	default:
+		return ""
+	}
 }
 
 var nativeRadioTypes = []string{"1", "2", "3", "9", "13", "20"}
@@ -337,7 +356,7 @@ func buildNativePhoneProfile(phone *waappv1.PhoneTarget) nativePhoneProfile {
 	seed := int64(binary.BigEndian.Uint64(randomBytes(8)))
 	rng := mrand.New(mrand.NewSource(seed))
 	model := nativeDeviceModels[rng.Intn(len(nativeDeviceModels))]
-	country := strings.ToUpper(strings.TrimSpace(phone.GetCountryIso2()))
+	country := nativeProfileCountry(phone)
 	ops := nativeOperators[country]
 	if len(ops) == 0 {
 		ops = nativeOperators["NONE"]
@@ -361,7 +380,7 @@ func buildNativePhoneProfile(phone *waappv1.PhoneTarget) nativePhoneProfile {
 		"hasinrc":               "1",
 		"rc":                    "0",
 		"device_ram":            fmt.Sprintf("%.2f", ram),
-		"db":                    "1",
+		"db":                    nativeDefaultDebugBridgeStatus,
 		"recaptcha":             `{"stage":"ABPROP_DISABLED"}`,
 		"feo2_query_status":     nativeDefaultFeo2QueryStatus,
 		"network_operator_name": "",
