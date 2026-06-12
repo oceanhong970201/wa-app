@@ -44,6 +44,10 @@ docker compose up -d
 - `WA_COMMON_PROXY`：可选默认 WA 出站代理；为空则直连。
 - `WA_NUMBER_PROBE_PROXY`：可选号码/SMS 探测代理；为空时使用 `WA_COMMON_PROXY`，`WA_COMMON_PROXY` 也为空则直连。
 - `WA_REGISTRATION_PROXY`：可选注册与 OTP 提交代理；为空时使用 `WA_COMMON_PROXY`，`WA_COMMON_PROXY` 也为空则直连。
+- `PROXY_RUNTIME_API_BASE_URL`：可选 proxy-runtime API；配置后可按入口用户名解析 gateway 代理。
+- `PROXY_RUNTIME_LOCAL_PROTOCOL`：proxy-runtime gateway 协议，默认 `socks5`。
+- `WA_NUMBER_PROBE_PROXY_USERNAME`：可选号码/SMS 探测入口用户名；配置后优先使用 proxy-runtime，不再被 `WA_COMMON_PROXY` 抢先。
+- `WA_REGISTRATION_PROXY_USERNAME`：可选注册/OTP 入口用户名；配置后优先使用 proxy-runtime，不再被 `WA_COMMON_PROXY` 抢先。
 
 PostgreSQL 和 Redis 都是可选组件。需要启用时，在 `docker-compose.yml` 中取消对应服务注释，并在 `.env` 中填写 `WA_APP_PG_DSN` / `WA_APP_REDIS_URL`。
 

@@ -604,6 +604,18 @@ func (g *actionGateway) registrationRequestRunner(ctx context.Context, payload m
 	if actionProxyURL(payload) != "" {
 		return engine, DynamicProxyRoute{}, false, nil
 	}
+	if g.registrationGatewayProxyConfigured() {
+		route, err := g.registrationGatewayProxy(ctx, payload, "WA_REGISTRATION_REQUEST_SMS")
+		if err != nil {
+			return nil, DynamicProxyRoute{}, false, err
+		}
+		proxied, err := engine.WithProxyURL(route.ProxyURL)
+		if err != nil {
+			g.releaseProxyRoute(context.Background(), route)
+			return nil, DynamicProxyRoute{}, false, err
+		}
+		return proxied, route, true, nil
+	}
 	if route, ok := g.staticRegistrationProxyRoute(); ok {
 		proxied, err := engine.WithProxyURL(route.ProxyURL)
 		if err != nil {
@@ -634,12 +646,15 @@ func (g *actionGateway) registrationSubmitRunner(ctx context.Context, payload ma
 	if actionProxyURL(payload) != "" {
 		return engine, DynamicProxyRoute{}, false, nil
 	}
-	if route, ok := g.staticRegistrationProxyRoute(); ok {
-		proxied, err := engine.WithProxyURL(route.ProxyURL)
-		if err != nil {
-			return nil, DynamicProxyRoute{}, false, err
+	if !g.registrationGatewayProxyConfigured() {
+		if route, ok := g.staticRegistrationProxyRoute(); ok {
+			proxied, err := engine.WithProxyURL(route.ProxyURL)
+			if err != nil {
+				return nil, DynamicProxyRoute{}, false, err
+			}
+			return proxied, route, true, nil
 		}
-		return proxied, route, true, nil
+		return engine, DynamicProxyRoute{}, false, nil
 	}
 	verificationRequestID := textField(payload, "verification_request_id")
 	route, err := g.loadRegistrationProxyRoute(ctx, verificationRequestID)
@@ -649,12 +664,9 @@ func (g *actionGateway) registrationSubmitRunner(ctx context.Context, payload ma
 		err = NewError(waappv1.WaErrorCode_WA_ERROR_CODE_ROUTE_UNAVAILABLE, "registration proxy session expired", false)
 	}
 	if err != nil {
-		if g == nil || g.server == nil || g.server.proxyRuntime == nil {
-			return engine, DynamicProxyRoute{}, false, nil
-		}
 		route, err = g.registrationGatewayProxy(ctx, payload, "WA_REGISTRATION_SUBMIT_OTP")
 		if err != nil {
-			return engine, DynamicProxyRoute{}, false, nil
+			return nil, DynamicProxyRoute{}, false, err
 		}
 		if saveErr := g.saveRegistrationProxyRoute(ctx, verificationRequestID, route); saveErr != nil {
 			g.releaseProxyRoute(context.Background(), route)
@@ -667,6 +679,13 @@ func (g *actionGateway) registrationSubmitRunner(ctx context.Context, payload ma
 		return nil, DynamicProxyRoute{}, false, err
 	}
 	return proxied, route, true, nil
+}
+
+func (g *actionGateway) registrationGatewayProxyConfigured() bool {
+	return g != nil &&
+		g.server != nil &&
+		g.server.proxyRuntime != nil &&
+		strings.TrimSpace(g.server.registrationProxyUsername) != ""
 }
 
 func (g *actionGateway) registrationGatewayProxy(ctx context.Context, payload map[string]any, purpose string) (DynamicProxyRoute, error) {
