@@ -2,7 +2,7 @@ package app
 
 import (
 	"bufio"
-	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -31,7 +31,9 @@ const (
 )
 
 type nativeHTTPClient struct {
-	client *http.Client
+	client         *http.Client
+	dialTLSContext func(context.Context, string, string) (net.Conn, error)
+	timeout        time.Duration
 }
 
 func (c *nativeHTTPClient) CloseIdleConnections() {
@@ -43,11 +45,12 @@ func (c *nativeHTTPClient) CloseIdleConnections() {
 
 func newNativeHTTPClient(proxy string) (*nativeHTTPClient, error) {
 	dialer := &net.Dialer{Timeout: 20 * time.Second, KeepAlive: 20 * time.Second}
+	dialTLSContext := nativeAndroidDialTLSContext(dialer.DialContext)
 	transport := &http.Transport{
 		ForceAttemptHTTP2: false,
 		TLSClientConfig:   &stdtls.Config{InsecureSkipVerify: true},
 		DialContext:       dialer.DialContext,
-		DialTLSContext:    nativeAndroidDialTLSContext(dialer.DialContext),
+		DialTLSContext:    dialTLSContext,
 	}
 	if proxy != "" {
 		parsed, err := parseOutboundProxyURL(proxy)
@@ -57,8 +60,13 @@ func newNativeHTTPClient(proxy string) (*nativeHTTPClient, error) {
 		if err := configureNativeHTTPProxy(transport, parsed, dialer); err != nil {
 			return nil, err
 		}
+		proxyDialTLSContext, err := nativeProxyDialTLSContext(parsed, dialer)
+		if err != nil {
+			return nil, err
+		}
+		dialTLSContext = proxyDialTLSContext
 	}
-	return &nativeHTTPClient{client: &http.Client{Timeout: 20 * time.Second, Transport: transport}}, nil
+	return &nativeHTTPClient{client: &http.Client{Timeout: 20 * time.Second, Transport: transport}, dialTLSContext: dialTLSContext, timeout: 20 * time.Second}, nil
 }
 
 func configureNativeHTTPProxy(transport *http.Transport, parsed *url.URL, dialer *net.Dialer) error {
@@ -93,6 +101,36 @@ func configureNativeHTTPProxy(transport *http.Transport, parsed *url.URL, dialer
 		return fmt.Errorf("unsupported HTTP proxy scheme")
 	}
 	return nil
+}
+
+func nativeProxyDialTLSContext(parsed *url.URL, dialer *net.Dialer) (func(context.Context, string, string) (net.Conn, error), error) {
+	if parsed == nil {
+		return nil, fmt.Errorf("proxy URL is required")
+	}
+	if dialer == nil {
+		dialer = &net.Dialer{Timeout: 20 * time.Second, KeepAlive: 20 * time.Second}
+	}
+	switch {
+	case parsed.Scheme == "http" || parsed.Scheme == "https":
+		return nativeAndroidDialTLSContext(nativeHTTPProxyConnectDialContext(dialer.DialContext, parsed)), nil
+	case strings.HasPrefix(parsed.Scheme, "socks5"):
+		var auth *xproxy.Auth
+		if parsed.User != nil {
+			password, _ := parsed.User.Password()
+			auth = &xproxy.Auth{User: parsed.User.Username(), Password: password}
+		}
+		proxyDialer, err := xproxy.SOCKS5("tcp", parsed.Host, auth, dialer)
+		if err != nil {
+			return nil, err
+		}
+		contextDialer, ok := proxyDialer.(xproxy.ContextDialer)
+		if !ok {
+			return nil, fmt.Errorf("SOCKS5 proxy dialer does not support context")
+		}
+		return nativeAndroidDialTLSContext(contextDialer.DialContext), nil
+	default:
+		return nil, fmt.Errorf("unsupported HTTP proxy scheme")
+	}
 }
 
 func nativeHTTPProxyConnectDialContext(dialContext func(context.Context, string, string) (net.Conn, error), parsed *url.URL) func(context.Context, string, string) (net.Conn, error) {
@@ -208,28 +246,35 @@ func (c *nativeHTTPClient) postWASafe(ctx context.Context, endpoint string, plai
 	if endpoint == "" {
 		return nil, "", fmt.Errorf("endpoint is not configured")
 	}
+	if c == nil || c.dialTLSContext == nil {
+		return nil, "", fmt.Errorf("native HTTP client is not configured")
+	}
 	envelope, err := buildWASafeEnvelope([]byte(plain), defaultWASafeServerPublicKeyHex, attestation)
 	if err != nil {
 		return nil, "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewBufferString(envelope.Body))
+	endpointURL, err := url.Parse(endpoint)
 	if err != nil {
 		return nil, "", err
 	}
-	setNativeHTTPHeader(req, "Content-Type", "application/x-www-form-urlencoded")
-	setNativeHTTPHeader(req, "User-Agent", firstNonEmpty(userAgent, nativeUserAgent(defaultWAAppVersion)))
-	setNativeHTTPHeader(req, "WaMsysRequest", "1")
-	setNativeHTTPHeader(req, "request_token", strings.ToUpper(newUUIDString()))
-	setNativeHTTPHeader(req, "X-Forwarded-Host", defaultNativeHTTPForwardedHost)
-	if envelope.Authorization != "" {
-		setNativeHTTPHeader(req, "Authorization", envelope.Authorization)
+	if endpointURL.Scheme != "https" || endpointURL.Host == "" {
+		return nil, "", fmt.Errorf("native endpoint must be https")
 	}
-	resp, err := c.client.Do(req)
+	resp, err := c.postOrderedForm(ctx, endpointURL, envelope.Body, firstNonEmpty(userAgent, nativeUserAgent(defaultWAAppVersion)), envelope.Authorization)
 	if err != nil {
 		return nil, envelope.Enc, err
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body := io.Reader(resp.Body)
+	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+		gzipReader, gzipErr := gzip.NewReader(resp.Body)
+		if gzipErr != nil {
+			return nil, envelope.Enc, gzipErr
+		}
+		defer gzipReader.Close()
+		body = gzipReader
+	}
+	data, _ := io.ReadAll(io.LimitReader(body, 1<<20))
 	result := map[string]any{"status_code": float64(resp.StatusCode), "response_text": string(data)}
 	var parsed map[string]any
 	if json.Unmarshal(data, &parsed) == nil {
@@ -241,6 +286,98 @@ func (c *nativeHTTPClient) postWASafe(ctx context.Context, endpoint string, plai
 		return result, envelope.Enc, fmt.Errorf("wasafe endpoint returned status %d", resp.StatusCode)
 	}
 	return result, envelope.Enc, nil
+}
+
+func (c *nativeHTTPClient) postOrderedForm(ctx context.Context, endpoint *url.URL, body string, userAgent string, authorization string) (*http.Response, error) {
+	host := endpoint.Host
+	address := nativeEndpointAddress(endpoint)
+	conn, err := c.dialTLSContext(ctx, "tcp", address)
+	if err != nil {
+		return nil, err
+	}
+	release := true
+	defer func() {
+		if release {
+			_ = conn.Close()
+		}
+	}()
+	if deadline := nativeRequestDeadline(ctx, c.timeout); !deadline.IsZero() {
+		_ = conn.SetDeadline(deadline)
+	}
+	headers := []string{
+		"POST " + nativeRequestURI(endpoint) + " HTTP/1.1",
+		"User-Agent: " + userAgent,
+		"WaMsysRequest: 1",
+	}
+	if authorization != "" {
+		headers = append(headers, "Authorization: "+authorization)
+	}
+	headers = append(headers,
+		"request_token: "+strings.ToUpper(newUUIDString()),
+		"X-Forwarded-Host: "+defaultNativeHTTPForwardedHost,
+		"Host: "+host,
+		"Content-Type: application/x-www-form-urlencoded",
+		fmt.Sprintf("Content-Length: %d", len(body)),
+		"Connection: Keep-Alive",
+		"Accept-Encoding: gzip",
+	)
+	if _, err := conn.Write([]byte(strings.Join(headers, "\r\n") + "\r\n\r\n" + body)); err != nil {
+		return nil, err
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodPost})
+	if err != nil {
+		return nil, err
+	}
+	release = false
+	resp.Body = &nativeResponseBody{ReadCloser: resp.Body, conn: conn}
+	return resp, nil
+}
+
+func nativeEndpointAddress(endpoint *url.URL) string {
+	if endpoint == nil {
+		return ""
+	}
+	if _, _, err := net.SplitHostPort(endpoint.Host); err == nil {
+		return endpoint.Host
+	}
+	return net.JoinHostPort(endpoint.Hostname(), "443")
+}
+
+func nativeRequestURI(endpoint *url.URL) string {
+	if endpoint == nil {
+		return "/"
+	}
+	uri := endpoint.RequestURI()
+	if uri == "" {
+		return "/"
+	}
+	return uri
+}
+
+func nativeRequestDeadline(ctx context.Context, timeout time.Duration) time.Time {
+	deadline := time.Time{}
+	if timeout > 0 {
+		deadline = time.Now().Add(timeout)
+	}
+	if ctxDeadline, ok := ctx.Deadline(); ok && (deadline.IsZero() || ctxDeadline.Before(deadline)) {
+		deadline = ctxDeadline
+	}
+	return deadline
+}
+
+type nativeResponseBody struct {
+	io.ReadCloser
+	conn net.Conn
+}
+
+func (b *nativeResponseBody) Close() error {
+	err := b.ReadCloser.Close()
+	if b.conn != nil {
+		if closeErr := b.conn.Close(); err == nil {
+			err = closeErr
+		}
+	}
+	return err
 }
 
 func setNativeHTTPHeader(req *http.Request, name string, value string) {
